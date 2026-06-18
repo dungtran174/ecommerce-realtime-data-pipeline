@@ -31,8 +31,8 @@ PostgreSQL (OLTP) → Debezium (CDC) → Kafka → ClickHouse (OLAP) → Metabas
 - [x] PostgreSQL OLTP schema design
 - [x] Airflow DAGs for data generation (Faker)
 - [x] Debezium CDC + Kafka configuration
-- [ ] ClickHouse Medallion architecture (Bronze/Silver/Gold)
-- [ ] Metabase dashboards
+- [x] ClickHouse Medallion architecture (Bronze/Silver/Gold)
+- [x] Metabase dashboards
 - [ ] End-to-end testing & validation
 
 ## Getting Started
@@ -68,4 +68,17 @@ bash debezium/register-connector.sh
 | Kafka UI | http://localhost:8085 | — |
 | Metabase | http://localhost:3000 | Setup on first run |
 | ClickHouse | http://localhost:8123 | default / (empty) |
+
+### Metabase Dashboards Setup
+
+1. Open `http://localhost:3000` and create your admin account.
+2. Add a new database connection:
+   - **Database type:** ClickHouse
+   - **Name:** E-commerce DWH
+   - **Host:** `clickhouse`
+   - **Port:** `8123`
+   - **Database name:** `report`
+   - **Username:** `default`
+   - **Password:** *(leave empty)*
+3. Use the tables in the `report` database (e.g., `view_marketing_dashboard`, `view_overview_sales`) to build your BI dashboards.
 
