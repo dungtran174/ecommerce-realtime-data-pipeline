@@ -1,0 +1,57 @@
+# =============================================================================
+# Git Ignore — Ecommerce Real-time Data Pipeline
+# =============================================================================
+
+# ----- Tài liệu thiết kế -----
+PROJECT_SPECIFICATION.md
+
+# ----- Biến môi trường & bí mật -----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+
+# ----- Docker volumes data -----
+postgres-data/
+postgres-airflow-data/
+postgres-metabase-data/
+clickhouse-data/
+kafka-data/
+metabase-data/
+
+# ----- Airflow -----
+airflow/logs/
+airflow/plugins/__pycache__/
+airflow/dags/__pycache__/
+
+# ----- Python -----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+*.egg-info/
+*.egg
+dist/
+build/
+
+# ----- IDE -----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ----- OS -----
+.DS_Store
+Thumbs.db
+desktop.ini
+*.tmp
+*.bak
