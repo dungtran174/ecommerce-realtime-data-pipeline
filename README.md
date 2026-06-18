@@ -30,7 +30,42 @@ PostgreSQL (OLTP) → Debezium (CDC) → Kafka → ClickHouse (OLAP) → Metabas
 - [x] Docker Compose infrastructure setup
 - [x] PostgreSQL OLTP schema design
 - [x] Airflow DAGs for data generation (Faker)
-- [ ] Debezium CDC + Kafka configuration
+- [x] Debezium CDC + Kafka configuration
 - [ ] ClickHouse Medallion architecture (Bronze/Silver/Gold)
 - [ ] Metabase dashboards
 - [ ] End-to-end testing & validation
+
+## Getting Started
+
+### Prerequisites
+
+- Docker & Docker Compose installed
+- Git
+
+### Quick Start
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/dungtran174/ecommerce-realtime-data-pipeline.git
+cd ecommerce-realtime-data-pipeline
+
+# 2. Create environment file from template
+cp .env.example .env
+
+# 3. Start all services
+docker-compose up -d
+
+# 4. Wait for services to be healthy, then register Debezium CDC connector
+bash debezium/register-connector.sh
+```
+
+### Service UIs
+
+| Service | URL | Credentials |
+|---------|-----|-------------|
+| Airflow | http://localhost:8080 | admin / admin |
+| Debezium UI | http://localhost:8084 | — |
+| Kafka UI | http://localhost:8085 | — |
+| Metabase | http://localhost:3000 | Setup on first run |
+| ClickHouse | http://localhost:8123 | default / (empty) |
+
