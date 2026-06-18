@@ -25,7 +25,7 @@ PostgreSQL (OLTP) → Debezium (CDC) → Kafka → ClickHouse (OLAP) → Metabas
 
 ## Project Status
 
-🚧 **Work in progress** — Building phase by phase.
+✅ **Completed**
 
 - [x] Docker Compose infrastructure setup
 - [x] PostgreSQL OLTP schema design
@@ -33,7 +33,7 @@ PostgreSQL (OLTP) → Debezium (CDC) → Kafka → ClickHouse (OLAP) → Metabas
 - [x] Debezium CDC + Kafka configuration
 - [x] ClickHouse Medallion architecture (Bronze/Silver/Gold)
 - [x] Metabase dashboards
-- [ ] End-to-end testing & validation
+- [x] End-to-end testing & validation
 
 ## Getting Started
 
@@ -82,3 +82,11 @@ bash debezium/register-connector.sh
    - **Password:** *(leave empty)*
 3. Use the tables in the `report` database (e.g., `view_marketing_dashboard`, `view_overview_sales`) to build your BI dashboards.
 
+### End-to-End Testing
+
+To verify the entire pipeline is working:
+
+1. **Trigger Manual DAG:** Open Airflow (`http://localhost:8080`) and manually trigger the `ecommerce_test_single_order_manual` DAG.
+2. **Check PostgreSQL:** Look in the `orders` table to find your newly created order ID.
+3. **Check Kafka:** Open Kafka UI (`http://localhost:8085`), go to the `ecommerce_cdc.public.orders` topic, and look for the new message with your order ID.
+4. **Check ClickHouse:** Open ClickHouse or Metabase, query the `gold.FACT_ORDER_OVERVIEW` or `report.view_overview_orders` table, and you should see the new order reflected within seconds.
