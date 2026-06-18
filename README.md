@@ -29,7 +29,7 @@ PostgreSQL (OLTP) → Debezium (CDC) → Kafka → ClickHouse (OLAP) → Metabas
 
 - [x] Docker Compose infrastructure setup
 - [x] PostgreSQL OLTP schema design
-- [ ] Airflow DAGs for data generation (Faker)
+- [x] Airflow DAGs for data generation (Faker)
 - [ ] Debezium CDC + Kafka configuration
 - [ ] ClickHouse Medallion architecture (Bronze/Silver/Gold)
 - [ ] Metabase dashboards
