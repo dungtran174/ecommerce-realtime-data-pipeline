@@ -1,0 +1,30 @@
+{
+  "name": "ecommerce-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "database.hostname": "postgres-main",
+    "database.port": "5432",
+    "database.user": "admin",
+    "database.password": "secret",
+    "database.dbname": "ecommerce_db",
+    "topic.prefix": "ecommerce_cdc",
+    "schema.include.list": "public",
+    "table.include.list": "public.users,public.roles,public.role_user,public.regions,public.provinces,public.addresses,public.categories,public.brands,public.tags,public.products,public.product_tag,public.order_status,public.payment_status,public.shipping_status,public.payment_methods,public.shipping_methods,public.ads_campaigns,public.discounts,public.orders,public.orderdetails,public.order_status_history,public.transactions",
+    "plugin.name": "pgoutput",
+    "slot.name": "debezium_ecommerce",
+    "publication.name": "dbz_publication",
+    "snapshot.mode": "initial",
+    "decimal.handling.mode": "string",
+    "time.precision.mode": "connect",
+    "tombstones.on.delete": "false",
+    "transforms": "unwrap",
+    "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
+    "transforms.unwrap.drop.tombstones": "true",
+    "transforms.unwrap.delete.handling.mode": "rewrite",
+    "transforms.unwrap.add.fields": "op,table,source.ts_ms",
+    "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "key.converter.schemas.enable": "false",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": "false"
+  }
+}

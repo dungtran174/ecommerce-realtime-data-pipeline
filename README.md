@@ -12,16 +12,16 @@ PostgreSQL (OLTP) → Debezium (CDC) → Kafka → ClickHouse (OLAP) → Metabas
 
 ## Tech Stack
 
-| Component | Technology | Role |
-|-----------|-----------|------|
-| OLTP Database | PostgreSQL | Transactional data source |
-| CDC | Debezium | Capture data changes via WAL |
-| Message Queue | Apache Kafka (KRaft) | Event streaming |
-| OLAP Database | ClickHouse | Columnar analytics warehouse |
-| Data Modeling | Medallion Architecture | Bronze → Silver → Gold layers |
-| Orchestration | Apache Airflow | DAG scheduling & ETL jobs |
-| Visualization | Metabase | BI dashboards |
-| Infrastructure | Docker Compose | Container orchestration |
+| Component      | Technology             | Role                          |
+| -------------- | ---------------------- | ----------------------------- |
+| OLTP Database  | PostgreSQL             | Transactional data source     |
+| CDC            | Debezium               | Capture data changes via WAL  |
+| Message Queue  | Apache Kafka (KRaft)   | Event streaming               |
+| OLAP Database  | ClickHouse             | Columnar analytics warehouse  |
+| Data Modeling  | Medallion Architecture | Bronze → Silver → Gold layers |
+| Orchestration  | Apache Airflow         | DAG scheduling & ETL jobs     |
+| Visualization  | Metabase               | BI dashboards                 |
+| Infrastructure | Docker Compose         | Container orchestration       |
 
 ## Project Status
 
