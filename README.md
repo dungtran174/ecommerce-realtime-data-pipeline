@@ -65,7 +65,7 @@ The warehouse is structured according to the industry-standard **Medallion Archi
 
 ![Medallion Architecture](images/medallion_architecture.png)
 
-### 🥉 Bronze Layer — Raw Event Ingestion
+### Bronze Layer — Raw Event Ingestion
 Consists of 22 raw tables ingesting directly from Kafka CDC topics via ClickHouse's native Kafka Table Engine and Materialized Views.
 - **Parallel Consumers**: High-throughput entities (`orders`, `orderdetails`) use `kafka_num_consumers = 4` to saturate CPU cores.
 - **Fault Tolerance**: Includes `kafka_skip_broken_messages = 10` to guarantee uninterrupted streaming.
@@ -73,7 +73,7 @@ Consists of 22 raw tables ingesting directly from Kafka CDC topics via ClickHous
 
 ![Bronze Layer Schema](images/bronze_layer_tables.png)
 
-### 🥈 Silver Layer — Cleansing, Conformance & Denormalization
+### Silver Layer — Cleansing, Conformance & Denormalization
 Cleanses raw events and denormalizes normalized transactional schemas into 7 unified tables:
 - **Timezone Normalization**: Automatically converts PostgreSQL Asia/Ho_Chi_Minh (+7) timestamps to UTC via `(created_at - INTERVAL 7 HOUR)`.
 - **Merged Dimensions**: 
@@ -84,7 +84,7 @@ Cleanses raw events and denormalizes normalized transactional schemas into 7 uni
 
 ![Silver Layer Schema](images/silver_layer_tables.png)
 
-### 🥇 Gold Layer — Business-Ready Dimensional Modeling
+### Gold Layer — Business-Ready Dimensional Modeling
 Structured as a **Galaxy / Constellation Schema** with conformed dimensions and specialized facts:
 
 ![Gold Layer Constellation Model](images/gold_star_schema.png)
@@ -108,7 +108,7 @@ Structured as a **Galaxy / Constellation Schema** with conformed dimensions and 
    - **Proportional Discount Allocation Formula**: Discounts applied at the order header level are distributed across line items proportional to their revenue share:
      $$\text{Discount}_{\text{Item}} = \left( \frac{\text{Price}_{\text{Item}} \times \text{Qty}}{\text{Order\_Amount}} \right) \times \text{Discount\_Amount}$$
 
-### 📊 Report Layer — Zero-Modeling BI Views
+### Report Layer — Zero-Modeling BI Views
 Four pre-joined, flattened views optimized for Metabase:
 1. `report.view_marketing_dashboard`: Campaign ROI, Average Order Value (AOV), and product volume.
 2. `report.view_overview_sales`: Daily and monthly revenue trends broken down by category and city.
@@ -225,14 +225,14 @@ bash scripts/clean.sh --volumes
 
 For in-depth operational instructions, refer to the modular documentation guides in the [`setup/`](setup/) directory:
 
-- 📋 [**Prerequisites & System Requirements**](setup/prerequisites.md): Hardware requirements, Docker limits, and host port allocation.
-- 🐳 [**Docker Infrastructure**](setup/docker.md): Container inventory, network configuration, and volume mounts.
-- 💨 [**Airflow Orchestration**](setup/airflow.md): 10 simulation and ETL DAGs, Dataset-driven triggers, and backfill execution.
-- 🔄 [**Debezium CDC Configuration**](setup/debezium.md): PostgreSQL WAL logical replication, SMT unwrap transform, and REST API commands.
-- ⚡ [**ClickHouse Data Warehouse**](setup/clickhouse.md): Detailed DDL specifications, MergeTree engines, and discount allocation formulas.
-- 📈 [**Metabase BI Dashboards**](setup/metabase.md): Step-by-step database connection and KPI visualization blueprints.
-- 🧪 [**Pipeline Verification Scenarios**](setup/verification.md): 4 formal test scenarios for latency, integrity, and aggregation accuracy.
-- 🛠️ [**Troubleshooting & Debug Guide**](setup/debug.md): Solutions for Kafka cluster IDs, slot locks, and schema mismatches.
+- [**Prerequisites & System Requirements**](setup/prerequisites.md): Hardware requirements, Docker limits, and host port allocation.
+- [**Docker Infrastructure**](setup/docker.md): Container inventory, network configuration, and volume mounts.
+- [**Airflow Orchestration**](setup/airflow.md): 10 simulation and ETL DAGs, Dataset-driven triggers, and backfill execution.
+- [**Debezium CDC Configuration**](setup/debezium.md): PostgreSQL WAL logical replication, SMT unwrap transform, and REST API commands.
+- [**ClickHouse Data Warehouse**](setup/clickhouse.md): Detailed DDL specifications, MergeTree engines, and discount allocation formulas.
+- [**Metabase BI Dashboards**](setup/metabase.md): Step-by-step database connection and KPI visualization blueprints.
+- [**Pipeline Verification Scenarios**](setup/verification.md): 4 formal test scenarios for latency, integrity, and aggregation accuracy.
+- [**Troubleshooting & Debug Guide**](setup/debug.md): Solutions for Kafka cluster IDs, slot locks, and schema mismatches.
 
 ---
 
