@@ -22,7 +22,7 @@ CLICKHOUSE_HTTP_PORT = os.getenv("CLICKHOUSE_HTTP_PORT", "8123")
 CLICKHOUSE_USER = os.getenv("CLICKHOUSE_USER", "default")
 CLICKHOUSE_PASSWORD = os.getenv("CLICKHOUSE_PASSWORD", "")
 
-ETL_SQL_PATH = "/opt/airflow/plugins/helpers/etl_fact_sales_product.sql"
+ETL_SQL_PATH = "/opt/airflow/dags/sql/etl_fact_sales_product.sql"
 
 
 def run_etl(**kwargs):
@@ -35,7 +35,8 @@ def run_etl(**kwargs):
 
     # Read the SQL file
     sql_path = ETL_SQL_PATH
-    # Fallback: read from mounted scripts directory
+    if not os.path.exists(sql_path):
+        sql_path = "/opt/airflow/plugins/helpers/etl_fact_sales_product.sql"
     if not os.path.exists(sql_path):
         sql_path = "/opt/airflow/dags/etl_fact_sales_product.sql"
 
