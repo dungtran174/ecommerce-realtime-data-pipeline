@@ -1,11 +1,8 @@
 # =============================================================================
-# Git Ignore — Ecommerce Real-time Data Pipeline
+# Git Ignore — E-Commerce Real-time Data Pipeline
 # =============================================================================
 
-# ----- Tài liệu thiết kế -----
-PROJECT_SPECIFICATION.md
-
-# ----- Biến môi trường & bí mật -----
+# Environment variables & secrets
 .env
 .env.*
 !.env.example
@@ -13,7 +10,7 @@ PROJECT_SPECIFICATION.md
 *.key
 *.cert
 
-# ----- Docker volumes data -----
+# Docker volumes & data directories
 postgres-data/
 postgres-airflow-data/
 postgres-metabase-data/
@@ -21,12 +18,12 @@ clickhouse-data/
 kafka-data/
 metabase-data/
 
-# ----- Airflow -----
+# Airflow logs & run artifacts
 airflow/logs/
 airflow/plugins/__pycache__/
 airflow/dags/__pycache__/
 
-# ----- Python -----
+# Python cache & virtual environments
 __pycache__/
 *.py[cod]
 *$py.class
@@ -42,14 +39,14 @@ pip-delete-this-directory.txt
 dist/
 build/
 
-# ----- IDE -----
+# IDE & editors
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# ----- OS -----
+# Operating system files
 .DS_Store
 Thumbs.db
 desktop.ini
