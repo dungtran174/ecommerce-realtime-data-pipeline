@@ -52,3 +52,13 @@ Thumbs.db
 desktop.ini
 *.tmp
 *.bak
+
+# Local review material (kept on this machine, not published)
+/setup/
+/tests/
+/scripts/verify_pipeline.sh
+/.github/
+/clickhouse/scripts/
+/debezium/register-connector.sh
+/images/*
+!/images/architecture.png
