@@ -1,5 +1,3 @@
-version: '3.8'
-
 x-airflow-common: &airflow-common
   build: ./airflow
   env_file: .env
@@ -10,7 +8,7 @@ x-airflow-common: &airflow-common
     - AIRFLOW__CORE__LOAD_EXAMPLES=False
   volumes:
     - ./airflow/dags:/opt/airflow/dags
-    - ./airflow/logs:/opt/airflow/logs
+    - airflow-logs:/opt/airflow/logs
     - ./airflow/plugins:/opt/airflow/plugins
   depends_on:
     postgres-airflow:
@@ -150,6 +148,7 @@ services:
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_NUM_PARTITIONS: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
@@ -173,7 +172,7 @@ services:
       - kafka
 
   debezium:
-    image: quay.io/debezium/connect:2.5.0.Final
+    image: debezium/connect:2.5.0.Final
     container_name: debezium
     env_file: .env
     environment:
@@ -240,6 +239,7 @@ services:
 volumes:
   postgres-data:
   postgres-airflow-data:
+  airflow-logs:
   postgres-metabase-data:
   kafka-data:
   clickhouse-data:
