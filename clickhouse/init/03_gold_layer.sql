@@ -1,215 +1,95 @@
--- =============================================================================
--- ClickHouse Gold Layer
--- Dimension tables (ReplacingMergeTree) + Fact tables (SummingMergeTree)
--- Business-ready analytics layer
--- =============================================================================
-
+-- Gold reads current Silver state. Re-running a query cannot duplicate counts;
+-- updates, deletes and late order lines are visible after CDC catches up.
 CREATE DATABASE IF NOT EXISTS gold;
 
--- #############################################################################
--- DIMENSION TABLES
--- #############################################################################
+CREATE VIEW IF NOT EXISTS gold.dim_date AS
+SELECT date AS date_key, toDayOfMonth(date) AS day,
+       toMonth(date) AS month, toQuarter(date) AS quarter,
+       toYear(date) AS year, toDayOfWeek(date) AS day_of_week,
+       toUInt8(toDayOfWeek(date) IN (6, 7)) AS is_weekend
+FROM (SELECT toDate('2000-01-01') + number AS date FROM numbers(36525));
 
--- =============================================
--- 1. DIM_DATE — Pre-generated calendar (2020–2029)
--- =============================================
-
-CREATE TABLE IF NOT EXISTS gold.dim_date (
-    date_key    Date,
-    day         UInt8,
-    month       UInt8,
-    quarter     UInt8,
-    year        UInt16,
-    day_of_week UInt8,
-    is_weekend  UInt8
-) ENGINE = MergeTree()
-ORDER BY date_key;
-
--- Populate 10 years of dates
-INSERT INTO gold.dim_date
-SELECT
-    date                                                    AS date_key,
-    toDayOfMonth(date)                                      AS day,
-    toMonth(date)                                           AS month,
-    toQuarter(date)                                         AS quarter,
-    toYear(date)                                            AS year,
-    toDayOfWeek(date)                                       AS day_of_week,
-    if(toDayOfWeek(date) IN (6, 7), 1, 0)                   AS is_weekend
-FROM (
-    SELECT toDate('2020-01-01') + number AS date
-    FROM numbers(3653)  -- ~10 years
-);
-
--- =============================================
--- 2. DIM_PRODUCTS — from silver.products
--- =============================================
-
-CREATE TABLE IF NOT EXISTS gold.dim_products (
-    product_id       UInt32,
-    product_name     String,
-    brand_name       String,
-    category_name    String,
-    subcategory_name String,
-    unit_cost        Decimal(18, 2),
-    current_price    Decimal(18, 2),
-    updated_at       DateTime
-) ENGINE = ReplacingMergeTree(updated_at)
-ORDER BY product_id;
-
--- Seed 'Unknown' row for orphan dimension lookups
-INSERT INTO gold.dim_products VALUES (0, 'Unknown', 'Unknown', 'Unknown', 'Unknown', 0, 0, now());
-
-CREATE MATERIALIZED VIEW IF NOT EXISTS gold.mv_dim_products TO gold.dim_products AS
-SELECT
-    product_id,
-    product_name,
-    brand_name,
-    category_name,
-    subcategory_name,
-    unit_cost,
-    current_price,
-    updated_at
+CREATE VIEW IF NOT EXISTS gold.dim_products AS
+SELECT product_id, product_name, brand_name, category_name,
+       subcategory_name, unit_cost, current_price, updated_at
 FROM silver.products;
 
--- =============================================
--- 3. DIM_LOCATIONS — from silver.locations
--- =============================================
-
-CREATE TABLE IF NOT EXISTS gold.dim_locations (
-    province_id   UInt32,
-    province_name String,
-    region_id     UInt32,
-    region_name   String,
-    updated_at    DateTime
-) ENGINE = ReplacingMergeTree(updated_at)
-ORDER BY province_id;
-
--- Seed 'Unknown' row
-INSERT INTO gold.dim_locations VALUES (0, 'Unknown', 0, 'Unknown', now());
-
-CREATE MATERIALIZED VIEW IF NOT EXISTS gold.mv_dim_locations TO gold.dim_locations AS
-SELECT
-    province_id,
-    province_name,
-    region_id,
-    region_name,
-    updated_at
+CREATE VIEW IF NOT EXISTS gold.dim_locations AS
+SELECT province_id, province_name, region_id, region_name, updated_at
 FROM silver.locations;
 
--- =============================================
--- 4. DIM_CAMPAIGNS — from silver.campaigns
--- =============================================
+CREATE VIEW IF NOT EXISTS gold.dim_campaigns AS
+SELECT campaign_id, campaign_title, updated_at FROM silver.campaigns;
 
-CREATE TABLE IF NOT EXISTS gold.dim_campaigns (
-    campaign_id    UInt32,
-    campaign_title String,
-    updated_at     DateTime
-) ENGINE = ReplacingMergeTree(updated_at)
-ORDER BY campaign_id;
+CREATE VIEW IF NOT EXISTS gold.dim_order_status AS
+SELECT id, name, updated_at FROM silver.order_status;
 
--- Seed 'No Campaign' row for orders without discounts
-INSERT INTO gold.dim_campaigns VALUES (0, 'No_Campaign', now());
+CREATE VIEW IF NOT EXISTS gold.FACT_USER_REGISTRATION AS
+SELECT registration_date, count() AS user_amount
+FROM silver.users GROUP BY registration_date;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS gold.mv_dim_campaigns TO gold.dim_campaigns AS
-SELECT
-    campaign_id,
-    campaign_title,
-    updated_at
-FROM silver.campaigns;
-
--- =============================================
--- 5. DIM_ORDER_STATUS — from silver.order_status
--- =============================================
-
-CREATE TABLE IF NOT EXISTS gold.dim_order_status (
-    id         UInt32,
-    name       String,
-    updated_at DateTime
-) ENGINE = ReplacingMergeTree(updated_at)
-ORDER BY id;
-
-CREATE MATERIALIZED VIEW IF NOT EXISTS gold.mv_dim_order_status TO gold.dim_order_status AS
-SELECT
-    id,
-    name,
-    updated_at
-FROM silver.order_status;
-
-
--- #############################################################################
--- FACT TABLES
--- #############################################################################
-
--- =============================================
--- 6. FACT_USER_REGISTRATION — MV from silver.users
---    Grain: 1 row = total new users per day
---    Engine: SummingMergeTree (auto-aggregates on merge)
--- =============================================
-
-CREATE TABLE IF NOT EXISTS gold.FACT_USER_REGISTRATION (
-    registration_date Date,
-    user_amount       UInt64
-) ENGINE = SummingMergeTree(user_amount)
-ORDER BY registration_date;
-
-CREATE MATERIALIZED VIEW IF NOT EXISTS gold.mv_fact_user_registration
-TO gold.FACT_USER_REGISTRATION AS
-SELECT
-    registration_date,
-    count() AS user_amount
-FROM silver.users
-GROUP BY registration_date;
-
--- =============================================
--- 7. FACT_ORDER_OVERVIEW — MV from silver.orders
---    Grain: 1 order per time/location/status/method
---    Engine: SummingMergeTree
--- =============================================
-
-CREATE TABLE IF NOT EXISTS gold.FACT_ORDER_OVERVIEW (
-    date_key          Date,
-    city_id           UInt32,
-    order_status_id   UInt32,
-    payment_method    LowCardinality(String),
-    shipping_method   LowCardinality(String),
-    order_count       UInt64,
-    total_gmv         Decimal(38, 2)
-) ENGINE = SummingMergeTree((order_count, total_gmv))
-ORDER BY (date_key, city_id, order_status_id, payment_method, shipping_method);
-
-CREATE MATERIALIZED VIEW IF NOT EXISTS gold.mv_fact_order_overview
-TO gold.FACT_ORDER_OVERVIEW AS
-SELECT
-    toDate(created_at)  AS date_key,
-    city_id,
-    order_status_id,
-    payment_method,
-    shipping_method,
-    count()             AS order_count,
-    sum(total_amount)   AS total_gmv
+-- One current order contributes to exactly one status bucket.
+CREATE VIEW IF NOT EXISTS gold.FACT_ORDER_OVERVIEW AS
+SELECT toDate(toTimeZone(created_at, 'Asia/Ho_Chi_Minh')) AS date_key, city_id, order_status_id,
+       payment_method, shipping_method,
+       count() AS order_count, sum(total_amount) AS total_gmv
 FROM silver.orders
-GROUP BY
-    date_key, city_id, order_status_id,
-    payment_method, shipping_method;
+GROUP BY date_key, city_id, order_status_id, payment_method, shipping_method;
 
--- =============================================
--- 8. FACT_SALES_PRODUCT — ETL every 5 minutes (NOT a MV)
---    Grain: 1 product per time/location/campaign
---    Reason: Requires multi-table JOIN (orders + order_items + products)
---            Data may arrive at different times, 5min buffer ensures integrity
---    Engine: SummingMergeTree
--- =============================================
+-- Product order count counts distinct orders *within each product*; it is not
+-- additive across products. Overall order counts come from FACT_ORDER_OVERVIEW.
+-- The last line of an order absorbs the gross discount rounding remainder.
+-- Discount before VAT uses the line's pre-VAT share of its VAT-inclusive total.
+CREATE VIEW IF NOT EXISTS gold.sales_line_base AS
+SELECT o.order_id AS order_id, o.created_at AS created_at,
+       o.city_id AS city_id, o.campaign_key AS campaign_key,
+       o.order_amount AS order_amount, o.discount_amount AS discount_amount,
+       oi.order_item_id AS order_item_id, oi.product_id AS product_id,
+       oi.quantity AS quantity, oi.gmv AS gmv,
+       oi.subtotal_amount AS subtotal_amount,
+       oi.unit_cost_at_order AS unit_cost_at_order
+FROM silver.orders AS o
+INNER JOIN silver.order_status AS os ON o.order_status_id = os.id
+INNER JOIN silver.order_items AS oi ON o.order_id = oi.order_id
+WHERE lower(os.name) = 'delivered';
 
-CREATE TABLE IF NOT EXISTS gold.FACT_SALES_PRODUCT (
-    date_key       Date,
-    city_id        UInt32,
-    product_id     UInt32,
-    campaign_key   UInt32,
-    quantity       UInt64,
-    gmv            Decimal(38, 2),
-    total_cost     Decimal(38, 2),
-    discount_val   Decimal(38, 2),
-    net_revenue    Decimal(38, 2),
-    order_count    UInt64
-) ENGINE = SummingMergeTree((quantity, gmv, total_cost, discount_val, net_revenue, order_count))
-ORDER BY (date_key, city_id, product_id, campaign_key);
+CREATE VIEW IF NOT EXISTS gold.sales_line_preliminary AS
+SELECT *,
+       if(order_amount > 0,
+          round(discount_amount * subtotal_amount / order_amount, 2),
+          toDecimal64(0, 4)) AS preliminary_discount,
+       row_number() OVER (PARTITION BY order_id ORDER BY order_item_id DESC) AS reverse_line_number,
+       sum(if(order_amount > 0,
+              round(discount_amount * subtotal_amount / order_amount, 2),
+              toDecimal64(0, 4))) OVER (PARTITION BY order_id) AS preliminary_total
+FROM gold.sales_line_base;
+
+CREATE VIEW IF NOT EXISTS gold.sales_line_allocated AS
+SELECT *,
+       if(reverse_line_number = 1,
+          preliminary_discount + discount_amount - preliminary_total,
+          preliminary_discount) AS discount_gross
+FROM gold.sales_line_preliminary;
+
+CREATE VIEW IF NOT EXISTS gold.sales_line_measured AS
+SELECT *,
+       if(subtotal_amount > 0,
+          round(discount_gross * gmv / subtotal_amount, 2),
+          toDecimal128(0, 8)) AS discount_ex_vat
+FROM gold.sales_line_allocated;
+
+CREATE VIEW IF NOT EXISTS gold.FACT_SALES_PRODUCT AS
+SELECT toDate(toTimeZone(m.created_at, 'Asia/Ho_Chi_Minh')) AS date_key,
+       m.city_id, m.product_id, m.campaign_key,
+       toUInt64(sum(m.quantity)) AS quantity,
+       sum(m.gmv) AS gmv,
+       if(countIf(m.unit_cost_at_order IS NULL) > 0,
+          NULL,
+          sum(toDecimal64(m.quantity, 2) * m.unit_cost_at_order)) AS total_cost,
+       countIf(m.unit_cost_at_order IS NULL) AS unknown_cost_line_count,
+       sum(m.discount_gross) AS discount_gross,
+       sum(m.discount_ex_vat) AS discount_val,
+       sum(m.gmv) - sum(m.discount_ex_vat) AS net_revenue,
+       uniqExact(m.order_id) AS order_count
+FROM gold.sales_line_measured AS m
+GROUP BY date_key, city_id, product_id, campaign_key;

@@ -1,10 +1,45 @@
 -- =============================================================================
 -- ClickHouse Bronze Layer
 -- Kafka Engine → Materialized View → ReplacingMergeTree
+-- Kafka offsets version each key within its topic partition (one partition per topic).
+-- DELETE events remain as tombstone-state rows; query with FINAL and _deleted = 0.
 -- Each OLTP table maps to: kafka_* → mv_* → bronze.*
 -- =============================================================================
 
 CREATE DATABASE IF NOT EXISTS bronze;
+
+
+-- Append-only copy of the sanitized Kafka payloads for replay and CDC auditing.
+-- The connector excludes credentials, contact details, and full addresses.
+CREATE TABLE IF NOT EXISTS bronze.raw_events (
+    topic LowCardinality(String),
+    kafka_partition UInt32,
+    kafka_offset UInt64,
+    payload String,
+    ingested_at DateTime
+) ENGINE = MergeTree
+PARTITION BY toYYYYMM(ingested_at)
+ORDER BY (topic, kafka_partition, kafka_offset)
+TTL ingested_at + INTERVAL 7 DAY DELETE;
+
+CREATE TABLE IF NOT EXISTS bronze.kafka_raw_events (
+    payload String
+) ENGINE = Kafka
+SETTINGS
+    kafka_broker_list = 'kafka:29092',
+    kafka_topic_list = 'ecommerce_cdc.public.users,ecommerce_cdc.public.roles,ecommerce_cdc.public.role_user,ecommerce_cdc.public.regions,ecommerce_cdc.public.provinces,ecommerce_cdc.public.addresses,ecommerce_cdc.public.categories,ecommerce_cdc.public.brands,ecommerce_cdc.public.tags,ecommerce_cdc.public.products,ecommerce_cdc.public.product_tag,ecommerce_cdc.public.order_status,ecommerce_cdc.public.payment_status,ecommerce_cdc.public.shipping_status,ecommerce_cdc.public.payment_methods,ecommerce_cdc.public.shipping_methods,ecommerce_cdc.public.ads_campaigns,ecommerce_cdc.public.discounts,ecommerce_cdc.public.orders,ecommerce_cdc.public.orderdetails,ecommerce_cdc.public.order_status_history,ecommerce_cdc.public.transactions',
+    kafka_group_name = 'clickhouse_bronze_raw_events',
+    kafka_format = 'RawBLOB',
+    kafka_num_consumers = 4;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS bronze.mv_raw_events TO bronze.raw_events AS
+SELECT
+    _topic AS topic,
+    toUInt32(_partition) AS kafka_partition,
+    _offset AS kafka_offset,
+    payload,
+    now() AS ingested_at
+FROM bronze.kafka_raw_events;
 
 -- =============================================
 -- 1. USERS
@@ -13,9 +48,6 @@ CREATE DATABASE IF NOT EXISTS bronze;
 CREATE TABLE IF NOT EXISTS bronze.kafka_users (
     id           Int32,
     username     String,
-    password     String,
-    email        String,
-    mobile       Nullable(String),
     created_at   Int64,
     __op         String,
     __table      String,
@@ -26,16 +58,14 @@ SETTINGS
     kafka_topic_list = 'ecommerce_cdc.public.users',
     kafka_group_name = 'clickhouse_bronze_users',
     kafka_format = 'JSONEachRow',
-    kafka_skip_broken_messages = 10;
+    kafka_skip_broken_messages = 100;
 
 CREATE TABLE IF NOT EXISTS bronze.users (
     id           UInt32,
     username     String,
-    password     String,
-    email        String,
-    mobile       Nullable(String),
     created_at   DateTime,
-    _version     UInt64
+    _version     UInt64,
+    _deleted UInt8
 ) ENGINE = ReplacingMergeTree(_version)
 ORDER BY id;
 
@@ -43,13 +73,10 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS bronze.mv_users TO bronze.users AS
 SELECT
     id,
     username,
-    password,
-    email,
-    mobile,
     COALESCE(fromUnixTimestamp64Milli(created_at), now()) AS created_at,
-    __source_ts_ms AS _version
-FROM bronze.kafka_users
-WHERE __op != 'd';
+    _offset AS _version,
+    toUInt8(__op = 'd') AS _deleted
+FROM bronze.kafka_users;
 
 -- =============================================
 -- 2. ROLES
@@ -69,14 +96,15 @@ SETTINGS
     kafka_topic_list = 'ecommerce_cdc.public.roles',
     kafka_group_name = 'clickhouse_bronze_roles',
     kafka_format = 'JSONEachRow',
-    kafka_skip_broken_messages = 10;
+    kafka_skip_broken_messages = 100;
 
 CREATE TABLE IF NOT EXISTS bronze.roles (
     id           UInt32,
     role_name    String,
     role_title   String,
     created_at   DateTime,
-    _version     UInt64
+    _version     UInt64,
+    _deleted UInt8
 ) ENGINE = ReplacingMergeTree(_version)
 ORDER BY id;
 
@@ -86,9 +114,9 @@ SELECT
     role_name,
     role_title,
     COALESCE(fromUnixTimestamp64Milli(created_at), now()) AS created_at,
-    __source_ts_ms AS _version
-FROM bronze.kafka_roles
-WHERE __op != 'd';
+    _offset AS _version,
+    toUInt8(__op = 'd') AS _deleted
+FROM bronze.kafka_roles;
 
 -- =============================================
 -- 3. ROLE_USER
@@ -108,14 +136,15 @@ SETTINGS
     kafka_topic_list = 'ecommerce_cdc.public.role_user',
     kafka_group_name = 'clickhouse_bronze_role_user',
     kafka_format = 'JSONEachRow',
-    kafka_skip_broken_messages = 10;
+    kafka_skip_broken_messages = 100;
 
 CREATE TABLE IF NOT EXISTS bronze.role_user (
     id           UInt32,
     user_id      UInt32,
     role_id      UInt32,
     created_at   DateTime,
-    _version     UInt64
+    _version     UInt64,
+    _deleted UInt8
 ) ENGINE = ReplacingMergeTree(_version)
 ORDER BY id;
 
@@ -125,9 +154,9 @@ SELECT
     user_id,
     role_id,
     COALESCE(fromUnixTimestamp64Milli(created_at), now()) AS created_at,
-    __source_ts_ms AS _version
-FROM bronze.kafka_role_user
-WHERE __op != 'd';
+    _offset AS _version,
+    toUInt8(__op = 'd') AS _deleted
+FROM bronze.kafka_role_user;
 
 -- =============================================
 -- 4. REGIONS
@@ -146,13 +175,14 @@ SETTINGS
     kafka_topic_list = 'ecommerce_cdc.public.regions',
     kafka_group_name = 'clickhouse_bronze_regions',
     kafka_format = 'JSONEachRow',
-    kafka_skip_broken_messages = 10;
+    kafka_skip_broken_messages = 100;
 
 CREATE TABLE IF NOT EXISTS bronze.regions (
     id           UInt32,
     region_name  String,
     created_at   DateTime,
-    _version     UInt64
+    _version     UInt64,
+    _deleted UInt8
 ) ENGINE = ReplacingMergeTree(_version)
 ORDER BY id;
 
@@ -161,9 +191,9 @@ SELECT
     id,
     region_name,
     COALESCE(fromUnixTimestamp64Milli(created_at), now()) AS created_at,
-    __source_ts_ms AS _version
-FROM bronze.kafka_regions
-WHERE __op != 'd';
+    _offset AS _version,
+    toUInt8(__op = 'd') AS _deleted
+FROM bronze.kafka_regions;
 
 -- =============================================
 -- 5. PROVINCES
@@ -185,7 +215,7 @@ SETTINGS
     kafka_topic_list = 'ecommerce_cdc.public.provinces',
     kafka_group_name = 'clickhouse_bronze_provinces',
     kafka_format = 'JSONEachRow',
-    kafka_skip_broken_messages = 10;
+    kafka_skip_broken_messages = 100;
 
 CREATE TABLE IF NOT EXISTS bronze.provinces (
     id              UInt32,
@@ -194,7 +224,8 @@ CREATE TABLE IF NOT EXISTS bronze.provinces (
     latitude        Nullable(Float64),
     longitude       Nullable(Float64),
     created_at      DateTime,
-    _version        UInt64
+    _version        UInt64,
+    _deleted UInt8
 ) ENGINE = ReplacingMergeTree(_version)
 ORDER BY id;
 
@@ -206,9 +237,9 @@ SELECT
     toFloat64OrNull(latitude)  AS latitude,
     toFloat64OrNull(longitude) AS longitude,
     COALESCE(fromUnixTimestamp64Milli(created_at), now()) AS created_at,
-    __source_ts_ms AS _version
-FROM bronze.kafka_provinces
-WHERE __op != 'd';
+    _offset AS _version,
+    toUInt8(__op = 'd') AS _deleted
+FROM bronze.kafka_provinces;
 
 -- =============================================
 -- 6. ADDRESSES
@@ -220,7 +251,6 @@ CREATE TABLE IF NOT EXISTS bronze.kafka_addresses (
     user_id         Int32,
     province_id     Int32,
     region_id       Int32,
-    full_address    Nullable(String),
     created_at      Int64,
     __op            String,
     __table         String,
@@ -231,7 +261,7 @@ SETTINGS
     kafka_topic_list = 'ecommerce_cdc.public.addresses',
     kafka_group_name = 'clickhouse_bronze_addresses',
     kafka_format = 'JSONEachRow',
-    kafka_skip_broken_messages = 10;
+    kafka_skip_broken_messages = 100;
 
 CREATE TABLE IF NOT EXISTS bronze.addresses (
     id              UInt32,
@@ -239,9 +269,9 @@ CREATE TABLE IF NOT EXISTS bronze.addresses (
     user_id         UInt32,
     province_id     UInt32,
     region_id       UInt32,
-    full_address    Nullable(String),
     created_at      DateTime,
-    _version        UInt64
+    _version        UInt64,
+    _deleted UInt8
 ) ENGINE = ReplacingMergeTree(_version)
 ORDER BY id;
 
@@ -252,11 +282,10 @@ SELECT
     user_id,
     province_id,
     region_id,
-    full_address,
     COALESCE(fromUnixTimestamp64Milli(created_at), now()) AS created_at,
-    __source_ts_ms AS _version
-FROM bronze.kafka_addresses
-WHERE __op != 'd';
+    _offset AS _version,
+    toUInt8(__op = 'd') AS _deleted
+FROM bronze.kafka_addresses;
 
 -- =============================================
 -- 7. CATEGORIES (self-referencing)
@@ -277,7 +306,7 @@ SETTINGS
     kafka_topic_list = 'ecommerce_cdc.public.categories',
     kafka_group_name = 'clickhouse_bronze_categories',
     kafka_format = 'JSONEachRow',
-    kafka_skip_broken_messages = 10;
+    kafka_skip_broken_messages = 100;
 
 CREATE TABLE IF NOT EXISTS bronze.categories (
     id              UInt32,
@@ -285,7 +314,8 @@ CREATE TABLE IF NOT EXISTS bronze.categories (
     category_id     Nullable(UInt32),
     slug            Nullable(String),
     created_at      DateTime,
-    _version        UInt64
+    _version        UInt64,
+    _deleted UInt8
 ) ENGINE = ReplacingMergeTree(_version)
 ORDER BY id;
 
@@ -296,9 +326,9 @@ SELECT
     category_id,
     slug,
     COALESCE(fromUnixTimestamp64Milli(created_at), now()) AS created_at,
-    __source_ts_ms AS _version
-FROM bronze.kafka_categories
-WHERE __op != 'd';
+    _offset AS _version,
+    toUInt8(__op = 'd') AS _deleted
+FROM bronze.kafka_categories;
 
 -- =============================================
 -- 8. BRANDS
@@ -317,13 +347,14 @@ SETTINGS
     kafka_topic_list = 'ecommerce_cdc.public.brands',
     kafka_group_name = 'clickhouse_bronze_brands',
     kafka_format = 'JSONEachRow',
-    kafka_skip_broken_messages = 10;
+    kafka_skip_broken_messages = 100;
 
 CREATE TABLE IF NOT EXISTS bronze.brands (
     id           UInt32,
     brand_name   String,
     created_at   DateTime,
-    _version     UInt64
+    _version     UInt64,
+    _deleted UInt8
 ) ENGINE = ReplacingMergeTree(_version)
 ORDER BY id;
 
@@ -332,9 +363,9 @@ SELECT
     id,
     brand_name,
     COALESCE(fromUnixTimestamp64Milli(created_at), now()) AS created_at,
-    __source_ts_ms AS _version
-FROM bronze.kafka_brands
-WHERE __op != 'd';
+    _offset AS _version,
+    toUInt8(__op = 'd') AS _deleted
+FROM bronze.kafka_brands;
 
 -- =============================================
 -- 9. TAGS
@@ -353,13 +384,14 @@ SETTINGS
     kafka_topic_list = 'ecommerce_cdc.public.tags',
     kafka_group_name = 'clickhouse_bronze_tags',
     kafka_format = 'JSONEachRow',
-    kafka_skip_broken_messages = 10;
+    kafka_skip_broken_messages = 100;
 
 CREATE TABLE IF NOT EXISTS bronze.tags (
     id           UInt32,
     tag_name     String,
     created_at   DateTime,
-    _version     UInt64
+    _version     UInt64,
+    _deleted UInt8
 ) ENGINE = ReplacingMergeTree(_version)
 ORDER BY id;
 
@@ -368,9 +400,9 @@ SELECT
     id,
     tag_name,
     COALESCE(fromUnixTimestamp64Milli(created_at), now()) AS created_at,
-    __source_ts_ms AS _version
-FROM bronze.kafka_tags
-WHERE __op != 'd';
+    _offset AS _version,
+    toUInt8(__op = 'd') AS _deleted
+FROM bronze.kafka_tags;
 
 -- =============================================
 -- 10. PRODUCTS
@@ -394,7 +426,7 @@ SETTINGS
     kafka_topic_list = 'ecommerce_cdc.public.products',
     kafka_group_name = 'clickhouse_bronze_products',
     kafka_format = 'JSONEachRow',
-    kafka_skip_broken_messages = 10;
+    kafka_skip_broken_messages = 100;
 
 CREATE TABLE IF NOT EXISTS bronze.products (
     id                  UInt32,
@@ -405,7 +437,8 @@ CREATE TABLE IF NOT EXISTS bronze.products (
     unit_cost           Decimal(15, 2),
     product_quantity    Int32,
     created_at          DateTime,
-    _version            UInt64
+    _version            UInt64,
+    _deleted UInt8
 ) ENGINE = ReplacingMergeTree(_version)
 ORDER BY id;
 
@@ -419,9 +452,9 @@ SELECT
     toDecimal64OrDefault(unit_cost, 2, toDecimal64(0, 2))     AS unit_cost,
     COALESCE(product_quantity, 0)              AS product_quantity,
     COALESCE(fromUnixTimestamp64Milli(created_at), now()) AS created_at,
-    __source_ts_ms AS _version
-FROM bronze.kafka_products
-WHERE __op != 'd';
+    _offset AS _version,
+    toUInt8(__op = 'd') AS _deleted
+FROM bronze.kafka_products;
 
 -- =============================================
 -- 11. PRODUCT_TAG
@@ -441,14 +474,15 @@ SETTINGS
     kafka_topic_list = 'ecommerce_cdc.public.product_tag',
     kafka_group_name = 'clickhouse_bronze_product_tag',
     kafka_format = 'JSONEachRow',
-    kafka_skip_broken_messages = 10;
+    kafka_skip_broken_messages = 100;
 
 CREATE TABLE IF NOT EXISTS bronze.product_tag (
     id           UInt32,
     product_id   UInt32,
     tag_id       UInt32,
     created_at   DateTime,
-    _version     UInt64
+    _version     UInt64,
+    _deleted UInt8
 ) ENGINE = ReplacingMergeTree(_version)
 ORDER BY id;
 
@@ -458,9 +492,9 @@ SELECT
     product_id,
     tag_id,
     COALESCE(fromUnixTimestamp64Milli(created_at), now()) AS created_at,
-    __source_ts_ms AS _version
-FROM bronze.kafka_product_tag
-WHERE __op != 'd';
+    _offset AS _version,
+    toUInt8(__op = 'd') AS _deleted
+FROM bronze.kafka_product_tag;
 
 -- =============================================
 -- 12. ORDER_STATUS
@@ -479,13 +513,14 @@ SETTINGS
     kafka_topic_list = 'ecommerce_cdc.public.order_status',
     kafka_group_name = 'clickhouse_bronze_orderstatus',
     kafka_format = 'JSONEachRow',
-    kafka_skip_broken_messages = 10;
+    kafka_skip_broken_messages = 100;
 
 CREATE TABLE IF NOT EXISTS bronze.orderstatus (
     id                  UInt32,
     order_status_name   String,
     created_at          DateTime,
-    _version            UInt64
+    _version            UInt64,
+    _deleted UInt8
 ) ENGINE = ReplacingMergeTree(_version)
 ORDER BY id;
 
@@ -494,9 +529,9 @@ SELECT
     id,
     order_status_name,
     COALESCE(fromUnixTimestamp64Milli(created_at), now()) AS created_at,
-    __source_ts_ms AS _version
-FROM bronze.kafka_orderstatus
-WHERE __op != 'd';
+    _offset AS _version,
+    toUInt8(__op = 'd') AS _deleted
+FROM bronze.kafka_orderstatus;
 
 -- =============================================
 -- 13. PAYMENT_STATUS
@@ -515,13 +550,14 @@ SETTINGS
     kafka_topic_list = 'ecommerce_cdc.public.payment_status',
     kafka_group_name = 'clickhouse_bronze_paymentstatus',
     kafka_format = 'JSONEachRow',
-    kafka_skip_broken_messages = 10;
+    kafka_skip_broken_messages = 100;
 
 CREATE TABLE IF NOT EXISTS bronze.paymentstatus (
     id                      UInt32,
     payment_status_name     String,
     created_at              DateTime,
-    _version                UInt64
+    _version                UInt64,
+    _deleted UInt8
 ) ENGINE = ReplacingMergeTree(_version)
 ORDER BY id;
 
@@ -530,9 +566,9 @@ SELECT
     id,
     payment_status_name,
     COALESCE(fromUnixTimestamp64Milli(created_at), now()) AS created_at,
-    __source_ts_ms AS _version
-FROM bronze.kafka_paymentstatus
-WHERE __op != 'd';
+    _offset AS _version,
+    toUInt8(__op = 'd') AS _deleted
+FROM bronze.kafka_paymentstatus;
 
 -- =============================================
 -- 14. SHIPPING_STATUS
@@ -551,13 +587,14 @@ SETTINGS
     kafka_topic_list = 'ecommerce_cdc.public.shipping_status',
     kafka_group_name = 'clickhouse_bronze_shippingstatus',
     kafka_format = 'JSONEachRow',
-    kafka_skip_broken_messages = 10;
+    kafka_skip_broken_messages = 100;
 
 CREATE TABLE IF NOT EXISTS bronze.shippingstatus (
     id                      UInt32,
     shipping_status_name    String,
     created_at              DateTime,
-    _version                UInt64
+    _version                UInt64,
+    _deleted UInt8
 ) ENGINE = ReplacingMergeTree(_version)
 ORDER BY id;
 
@@ -566,9 +603,9 @@ SELECT
     id,
     shipping_status_name,
     COALESCE(fromUnixTimestamp64Milli(created_at), now()) AS created_at,
-    __source_ts_ms AS _version
-FROM bronze.kafka_shippingstatus
-WHERE __op != 'd';
+    _offset AS _version,
+    toUInt8(__op = 'd') AS _deleted
+FROM bronze.kafka_shippingstatus;
 
 -- =============================================
 -- 15. PAYMENT_METHODS
@@ -587,13 +624,14 @@ SETTINGS
     kafka_topic_list = 'ecommerce_cdc.public.payment_methods',
     kafka_group_name = 'clickhouse_bronze_paymentmethods',
     kafka_format = 'JSONEachRow',
-    kafka_skip_broken_messages = 10;
+    kafka_skip_broken_messages = 100;
 
 CREATE TABLE IF NOT EXISTS bronze.paymentmethods (
     id                      UInt32,
     payment_method_name     String,
     created_at              DateTime,
-    _version                UInt64
+    _version                UInt64,
+    _deleted UInt8
 ) ENGINE = ReplacingMergeTree(_version)
 ORDER BY id;
 
@@ -602,9 +640,9 @@ SELECT
     id,
     payment_method_name,
     COALESCE(fromUnixTimestamp64Milli(created_at), now()) AS created_at,
-    __source_ts_ms AS _version
-FROM bronze.kafka_paymentmethods
-WHERE __op != 'd';
+    _offset AS _version,
+    toUInt8(__op = 'd') AS _deleted
+FROM bronze.kafka_paymentmethods;
 
 -- =============================================
 -- 16. SHIPPING_METHODS
@@ -623,13 +661,14 @@ SETTINGS
     kafka_topic_list = 'ecommerce_cdc.public.shipping_methods',
     kafka_group_name = 'clickhouse_bronze_shippingmethods',
     kafka_format = 'JSONEachRow',
-    kafka_skip_broken_messages = 10;
+    kafka_skip_broken_messages = 100;
 
 CREATE TABLE IF NOT EXISTS bronze.shippingmethods (
     id                      UInt32,
     shipping_method_name    String,
     created_at              DateTime,
-    _version                UInt64
+    _version                UInt64,
+    _deleted UInt8
 ) ENGINE = ReplacingMergeTree(_version)
 ORDER BY id;
 
@@ -638,9 +677,9 @@ SELECT
     id,
     shipping_method_name,
     COALESCE(fromUnixTimestamp64Milli(created_at), now()) AS created_at,
-    __source_ts_ms AS _version
-FROM bronze.kafka_shippingmethods
-WHERE __op != 'd';
+    _offset AS _version,
+    toUInt8(__op = 'd') AS _deleted
+FROM bronze.kafka_shippingmethods;
 
 -- =============================================
 -- 17. ADS_CAMPAIGNS
@@ -660,14 +699,15 @@ SETTINGS
     kafka_topic_list = 'ecommerce_cdc.public.ads_campaigns',
     kafka_group_name = 'clickhouse_bronze_adscampaigns',
     kafka_format = 'JSONEachRow',
-    kafka_skip_broken_messages = 10;
+    kafka_skip_broken_messages = 100;
 
 CREATE TABLE IF NOT EXISTS bronze.adscampaigns (
     id              UInt32,
     campaign_title  String,
     started_at      Nullable(DateTime),
     expired_at      Nullable(DateTime),
-    _version        UInt64
+    _version        UInt64,
+    _deleted UInt8
 ) ENGINE = ReplacingMergeTree(_version)
 ORDER BY id;
 
@@ -677,9 +717,9 @@ SELECT
     campaign_title,
     if(started_at IS NOT NULL, fromUnixTimestamp64Milli(started_at), NULL) AS started_at,
     if(expired_at IS NOT NULL, fromUnixTimestamp64Milli(expired_at), NULL) AS expired_at,
-    __source_ts_ms AS _version
-FROM bronze.kafka_adscampaigns
-WHERE __op != 'd';
+    _offset AS _version,
+    toUInt8(__op = 'd') AS _deleted
+FROM bronze.kafka_adscampaigns;
 
 -- =============================================
 -- 18. DISCOUNTS
@@ -702,7 +742,7 @@ SETTINGS
     kafka_topic_list = 'ecommerce_cdc.public.discounts',
     kafka_group_name = 'clickhouse_bronze_discounts',
     kafka_format = 'JSONEachRow',
-    kafka_skip_broken_messages = 10;
+    kafka_skip_broken_messages = 100;
 
 CREATE TABLE IF NOT EXISTS bronze.discounts (
     id              UInt32,
@@ -712,7 +752,8 @@ CREATE TABLE IF NOT EXISTS bronze.discounts (
     code            Nullable(String),
     started_at      Nullable(DateTime),
     expired_at      Nullable(DateTime),
-    _version        UInt64
+    _version        UInt64,
+    _deleted UInt8
 ) ENGINE = ReplacingMergeTree(_version)
 ORDER BY id;
 
@@ -725,9 +766,9 @@ SELECT
     code,
     if(started_at IS NOT NULL, fromUnixTimestamp64Milli(started_at), NULL) AS started_at,
     if(expired_at IS NOT NULL, fromUnixTimestamp64Milli(expired_at), NULL) AS expired_at,
-    __source_ts_ms AS _version
-FROM bronze.kafka_discounts
-WHERE __op != 'd';
+    _offset AS _version,
+    toUInt8(__op = 'd') AS _deleted
+FROM bronze.kafka_discounts;
 
 -- =============================================
 -- 19. ORDERS (high throughput: 4 consumers)
@@ -760,7 +801,7 @@ SETTINGS
     kafka_group_name = 'clickhouse_bronze_orders',
     kafka_format = 'JSONEachRow',
     kafka_num_consumers = 4,
-    kafka_skip_broken_messages = 10;
+    kafka_skip_broken_messages = 100;
 
 CREATE TABLE IF NOT EXISTS bronze.orders (
     id                  UInt32,
@@ -779,7 +820,8 @@ CREATE TABLE IF NOT EXISTS bronze.orders (
     shipped_at          Nullable(DateTime),
     created_at          DateTime,
     updated_at          DateTime,
-    _version            UInt64
+    _version            UInt64,
+    _deleted UInt8
 ) ENGINE = ReplacingMergeTree(_version)
 ORDER BY id;
 
@@ -801,9 +843,9 @@ SELECT
     if(shipped_at IS NOT NULL, fromUnixTimestamp64Milli(shipped_at), NULL) AS shipped_at,
     COALESCE(fromUnixTimestamp64Milli(created_at), now()) AS created_at,
     COALESCE(fromUnixTimestamp64Milli(updated_at), now()) AS updated_at,
-    __source_ts_ms AS _version
-FROM bronze.kafka_orders
-WHERE __op != 'd';
+    _offset AS _version,
+    toUInt8(__op = 'd') AS _deleted
+FROM bronze.kafka_orders;
 
 -- =============================================
 -- 20. ORDERDETAILS (high throughput: 4 consumers)
@@ -817,6 +859,7 @@ CREATE TABLE IF NOT EXISTS bronze.kafka_orderdetails (
     product_price   Nullable(String),
     product_tax     Nullable(String),
     subtotal_amount Nullable(String),
+    unit_cost_at_order Nullable(String),
     created_at      Int64,
     __op            String,
     __table         String,
@@ -828,7 +871,7 @@ SETTINGS
     kafka_group_name = 'clickhouse_bronze_orderdetails',
     kafka_format = 'JSONEachRow',
     kafka_num_consumers = 4,
-    kafka_skip_broken_messages = 10;
+    kafka_skip_broken_messages = 100;
 
 CREATE TABLE IF NOT EXISTS bronze.orderdetails (
     id              UInt32,
@@ -838,8 +881,10 @@ CREATE TABLE IF NOT EXISTS bronze.orderdetails (
     product_price   Decimal(15, 2),
     product_tax     Decimal(15, 2),
     subtotal_amount Decimal(15, 2),
+    unit_cost_at_order Nullable(Decimal(15, 2)),
     created_at      DateTime,
-    _version        UInt64
+    _version        UInt64,
+    _deleted UInt8
 ) ENGINE = ReplacingMergeTree(_version)
 ORDER BY id;
 
@@ -852,10 +897,11 @@ SELECT
     toDecimal64OrDefault(product_price, 2, toDecimal64(0, 2))   AS product_price,
     toDecimal64OrDefault(product_tax, 2, toDecimal64(0, 2))      AS product_tax,
     toDecimal64OrDefault(subtotal_amount, 2, toDecimal64(0, 2))  AS subtotal_amount,
+    toDecimal64OrNull(unit_cost_at_order, 2) AS unit_cost_at_order,
     COALESCE(fromUnixTimestamp64Milli(created_at), now()) AS created_at,
-    __source_ts_ms AS _version
-FROM bronze.kafka_orderdetails
-WHERE __op != 'd';
+    _offset AS _version,
+    toUInt8(__op = 'd') AS _deleted
+FROM bronze.kafka_orderdetails;
 
 -- =============================================
 -- 21. ORDER_STATUS_HISTORY
@@ -877,7 +923,7 @@ SETTINGS
     kafka_topic_list = 'ecommerce_cdc.public.order_status_history',
     kafka_group_name = 'clickhouse_bronze_orderstatushistory',
     kafka_format = 'JSONEachRow',
-    kafka_skip_broken_messages = 10;
+    kafka_skip_broken_messages = 100;
 
 CREATE TABLE IF NOT EXISTS bronze.orderstatushistory (
     id              UInt32,
@@ -886,7 +932,8 @@ CREATE TABLE IF NOT EXISTS bronze.orderstatushistory (
     staff_id        Nullable(UInt32),
     comments        Nullable(String),
     created_at      DateTime,
-    _version        UInt64
+    _version        UInt64,
+    _deleted UInt8
 ) ENGINE = ReplacingMergeTree(_version)
 ORDER BY id;
 
@@ -898,9 +945,9 @@ SELECT
     staff_id,
     comments,
     COALESCE(fromUnixTimestamp64Milli(created_at), now()) AS created_at,
-    __source_ts_ms AS _version
-FROM bronze.kafka_orderstatushistory
-WHERE __op != 'd';
+    _offset AS _version,
+    toUInt8(__op = 'd') AS _deleted
+FROM bronze.kafka_orderstatushistory;
 
 -- =============================================
 -- 22. TRANSACTIONS
@@ -922,7 +969,7 @@ SETTINGS
     kafka_topic_list = 'ecommerce_cdc.public.transactions',
     kafka_group_name = 'clickhouse_bronze_transactions',
     kafka_format = 'JSONEachRow',
-    kafka_skip_broken_messages = 10;
+    kafka_skip_broken_messages = 100;
 
 CREATE TABLE IF NOT EXISTS bronze.transactions (
     id                  UInt32,
@@ -931,7 +978,8 @@ CREATE TABLE IF NOT EXISTS bronze.transactions (
     status              UInt8,
     created_at          DateTime,
     description         Nullable(String),
-    _version            UInt64
+    _version            UInt64,
+    _deleted UInt8
 ) ENGINE = ReplacingMergeTree(_version)
 ORDER BY id;
 
@@ -943,6 +991,6 @@ SELECT
     COALESCE(status, 1)  AS status,
     COALESCE(fromUnixTimestamp64Milli(created_at), now()) AS created_at,
     description,
-    __source_ts_ms AS _version
-FROM bronze.kafka_transactions
-WHERE __op != 'd';
+    _offset AS _version,
+    toUInt8(__op = 'd') AS _deleted
+FROM bronze.kafka_transactions;

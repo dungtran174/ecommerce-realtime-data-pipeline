@@ -17,8 +17,8 @@ SELECT
     dd.month                            AS month,
     dd.quarter                          AS quarter,
     dd.year                             AS year,
-    dl.province_name                    AS city,
-    dl.region_name                      AS province,
+    dl.province_name                    AS province,
+    dl.region_name                      AS region,
     dp.category_name                    AS parent_category,
     dp.subcategory_name                 AS subcategory,
     dp.product_name                     AS product_name,
@@ -27,10 +27,8 @@ SELECT
     sum(f.net_revenue)                  AS total_net_revenue,
     sum(f.quantity)                     AS quantity_sold,
     sum(f.order_count)                  AS order_count,
-    if(sum(f.order_count) > 0,
-        sum(f.gmv) / sum(f.order_count),
-        0
-    )                                   AS aov,
+    sum(f.net_revenue) / nullIf(sum(f.order_count), 0)
+                                        AS product_aov_ex_vat,
     if(sum(f.quantity) > 0,
         sum(f.gmv) / sum(f.quantity),
         0
@@ -42,7 +40,7 @@ LEFT JOIN gold.dim_products AS dp ON f.product_id = dp.product_id
 LEFT JOIN gold.dim_campaigns AS dc ON f.campaign_key = dc.campaign_id
 GROUP BY
     date, month, quarter, year,
-    city, province,
+    province, region,
     parent_category, subcategory, product_name,
     campaign_title;
 
@@ -57,7 +55,7 @@ SELECT
     f.date_key                          AS date,
     dd.month                            AS month,
     dd.year                             AS year,
-    dl.province_name                    AS city,
+    dl.province_name                    AS province,
     dp.product_name                     AS product,
     dp.category_name                    AS category,
     sum(f.gmv)                          AS total_gmv,
@@ -70,7 +68,7 @@ LEFT JOIN gold.dim_locations AS dl ON f.city_id = dl.province_id
 LEFT JOIN gold.dim_products AS dp ON f.product_id = dp.product_id
 GROUP BY
     date, month, year,
-    city, product, category;
+    province, product, category;
 
 -- =============================================
 -- 3. view_overview_orders
@@ -82,7 +80,7 @@ CREATE VIEW IF NOT EXISTS report.view_overview_orders AS
 SELECT
     f.date_key                          AS date,
     dd.month                            AS month,
-    dl.province_name                    AS city,
+    dl.province_name                    AS province,
     dos.name                            AS order_status,
     f.payment_method                    AS payment_method,
     f.shipping_method                   AS shipping_method,
@@ -93,7 +91,7 @@ LEFT JOIN gold.dim_date AS dd ON f.date_key = dd.date_key
 LEFT JOIN gold.dim_locations AS dl ON f.city_id = dl.province_id
 LEFT JOIN gold.dim_order_status AS dos ON f.order_status_id = dos.id
 GROUP BY
-    date, month, city,
+    date, month, province,
     order_status, payment_method, shipping_method;
 
 -- =============================================
@@ -109,3 +107,16 @@ SELECT
     sum(user_amount)                    AS new_user_count
 FROM gold.FACT_USER_REGISTRATION
 GROUP BY registration_date;
+
+-- Overall delivered-order AOV uses one order per denominator, regardless of
+-- how many products it contains. Product-level order counts are non-additive.
+CREATE VIEW IF NOT EXISTS report.view_delivered_order_aov AS
+SELECT
+    toDate(toTimeZone(created_at, 'Asia/Ho_Chi_Minh')) AS date,
+    city_id,
+    uniqExact(order_id) AS delivered_order_count,
+    sum(gmv) AS gmv_ex_vat,
+    sum(gmv - discount_ex_vat) AS net_sales_ex_vat,
+    sum(gmv - discount_ex_vat) / nullIf(uniqExact(order_id), 0) AS aov_ex_vat
+FROM gold.sales_line_measured
+GROUP BY date, city_id;

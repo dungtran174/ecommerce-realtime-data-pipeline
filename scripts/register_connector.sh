@@ -1,71 +1,74 @@
-#!/bin/bash
-# =============================================================================
-# Register or Update Debezium CDC Connector for PostgreSQL (22 tables)
-# =============================================================================
+#!/usr/bin/env bash
+set -euo pipefail
 
-set -e
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+CONFIG_FILE="${ROOT_DIR}/debezium/connectors/ecommerce-connector.json"
+CONNECTOR_NAME="ecommerce-connector"
+
+env_value() {
+    [ -f "${ROOT_DIR}/.env" ] || return 0
+    sed -n "s/^${1}=//p" "${ROOT_DIR}/.env" | head -n 1
+}
 
 DEBEZIUM_HOST="${DEBEZIUM_HOST:-localhost}"
+DEBEZIUM_PORT="${DEBEZIUM_PORT:-$(env_value DEBEZIUM_PORT)}"
 DEBEZIUM_PORT="${DEBEZIUM_PORT:-8083}"
-CONNECTOR_NAME="ecommerce-connector"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONNECTOR_CONFIG="${SCRIPT_DIR}/../debezium/connectors/ecommerce-connector.json"
+POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-$(env_value POSTGRES_PASSWORD)}"
+if [ -z "${POSTGRES_PASSWORD}" ]; then
+    echo "POSTGRES_PASSWORD is required in the environment or .env" >&2
+    exit 1
+fi
+command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
 
-echo "=================================================="
-echo "  Debezium CDC Connector Registration"
-echo "=================================================="
-
-# 1. Wait for Debezium REST API to be ready
-echo "[1/3] Checking Debezium Connect service..."
-MAX_RETRIES=30
-RETRY_COUNT=0
-
-until curl -s "http://${DEBEZIUM_HOST}:${DEBEZIUM_PORT}/" > /dev/null 2>&1; do
-    RETRY_COUNT=$((RETRY_COUNT + 1))
-    if [ $RETRY_COUNT -ge $MAX_RETRIES ]; then
-        echo "Error: Debezium Connect failed to become ready after ${MAX_RETRIES} attempts."
+API="http://${DEBEZIUM_HOST}:${DEBEZIUM_PORT}"
+for attempt in $(seq 1 30); do
+    if curl -fsS --max-time 3 "${API}/" >/dev/null 2>&1; then
+        break
+    fi
+    if [ "$attempt" -eq 30 ]; then
+        echo "Debezium API did not become ready at ${API}" >&2
         exit 1
     fi
-    echo "  Waiting for Debezium at ${DEBEZIUM_HOST}:${DEBEZIUM_PORT}... (${RETRY_COUNT}/${MAX_RETRIES})"
-    sleep 3
+    sleep 2
 done
-echo "  ✓ Debezium Connect is up and healthy!"
 
-# 2. Check existing connectors
-echo "[2/3] Registering connector configuration..."
-EXISTING=$(curl -s "http://${DEBEZIUM_HOST}:${DEBEZIUM_PORT}/connectors")
-
-if echo "$EXISTING" | grep -q "\"${CONNECTOR_NAME}\""; then
-    echo "  Connector '${CONNECTOR_NAME}' exists. Updating configuration..."
-    curl -s -X PUT \
-        -H "Content-Type: application/json" \
-        -d @"${CONNECTOR_CONFIG}" \
-        "http://${DEBEZIUM_HOST}:${DEBEZIUM_PORT}/connectors/${CONNECTOR_NAME}/config" > /dev/null
-    echo "  ✓ Configuration updated."
+# Kafka Connect POST accepts {name,config}; PUT /config accepts config only.
+# Inject the password at request time so it is absent from the committed JSON.
+request_file="$(mktemp)"
+chmod 600 "$request_file"
+trap 'rm -f "$request_file"' EXIT
+if curl -fsS --max-time 10 "${API}/connectors/${CONNECTOR_NAME}" >/dev/null 2>&1; then
+    jq --arg password "$POSTGRES_PASSWORD" '.config + {"database.password": $password}' \
+        "$CONFIG_FILE" > "$request_file"
+    curl -fsS --max-time 30 -X PUT -H 'Content-Type: application/json' \
+        --data-binary @"$request_file" "${API}/connectors/${CONNECTOR_NAME}/config" >/dev/null
 else
-    echo "  Creating new connector '${CONNECTOR_NAME}'..."
-    curl -s -X POST \
-        -H "Content-Type: application/json" \
-        -d @"${CONNECTOR_CONFIG}" \
-        "http://${DEBEZIUM_HOST}:${DEBEZIUM_PORT}/connectors" > /dev/null
-    echo "  ✓ Connector created."
+    jq --arg password "$POSTGRES_PASSWORD" '.config["database.password"] = $password' \
+        "$CONFIG_FILE" > "$request_file"
+    curl -fsS --max-time 30 -X POST -H 'Content-Type: application/json' \
+        --data-binary @"$request_file" "${API}/connectors" >/dev/null
 fi
 
-# 3. Verify status
-echo "[3/3] Verifying connector status..."
-sleep 2
-
-STATUS_JSON=$(curl -s "http://${DEBEZIUM_HOST}:${DEBEZIUM_PORT}/connectors/${CONNECTOR_NAME}/status")
-CONNECTOR_STATE=$(echo "$STATUS_JSON" | grep -o '"state":"[^"]*"' | head -n 1 | cut -d':' -f2 | tr -d '"')
-
-if [ "$CONNECTOR_STATE" = "RUNNING" ]; then
-    echo "  ✓ Connector state: RUNNING"
-else
-    echo "  Status response: ${STATUS_JSON}"
-fi
-
-echo "=================================================="
-echo "  ✓ Debezium CDC Connector is active!"
-echo "  Kafka UI:    http://localhost:8085"
-echo "  Debezium UI: http://localhost:8084"
-echo "=================================================="
+for attempt in $(seq 1 30); do
+    # The worker may return 404 briefly while it propagates a new connector.
+    status="$(curl -fsS --max-time 10 "${API}/connectors/${CONNECTOR_NAME}/status" 2>/dev/null || true)"
+    if [ -z "$status" ]; then
+        sleep 2
+        continue
+    fi
+    if jq -e '.connector.state == "RUNNING" and (.tasks | length > 0) and all(.tasks[]; .state == "RUNNING")' \
+        >/dev/null <<< "$status"; then
+        echo "Connector and all tasks are RUNNING"
+        exit 0
+    fi
+    if jq -e '.connector.state == "FAILED" or any(.tasks[]; .state == "FAILED")' \
+        >/dev/null <<< "$status"; then
+        echo "$status" | jq '{connector, tasks}' >&2
+        exit 1
+    fi
+    sleep 2
+done
+echo "Connector or task did not become RUNNING" >&2
+echo "$status" | jq '{connector, tasks}' >&2
+exit 1
