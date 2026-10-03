@@ -54,5 +54,3 @@ Stop the stack while retaining data with `bash scripts/clean.sh`. The `--volumes
 ## Stack
 
 PostgreSQL 15 · Debezium 2.5 · Kafka 3.7 (KRaft) · ClickHouse 24 · Airflow 2.10 · Metabase · Docker Compose
-
-MIT licensed.

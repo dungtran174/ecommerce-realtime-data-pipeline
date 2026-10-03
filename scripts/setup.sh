@@ -79,6 +79,10 @@ ${DOCKER_COMPOSE_CMD} exec -T clickhouse sh -lc \
     'clickhouse-client --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" --multiquery' \
     < clickhouse/init/05_quarantine_events.sql
 python3 scripts/migrate_kafka_consumers.py
+echo "  - Refreshing reporting views..."
+${DOCKER_COMPOSE_CMD} exec -T clickhouse sh -lc \
+    'clickhouse-client --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" --multiquery' \
+    < clickhouse/init/04_reporting_views.sql
 ${DOCKER_COMPOSE_CMD} exec -T postgres-main sh -lc \
     'psql -X -v ON_ERROR_STOP=1 -1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
     < postgres/init/03_snapshot_unit_cost.sql
