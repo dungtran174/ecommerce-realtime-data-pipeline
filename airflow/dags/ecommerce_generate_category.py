@@ -13,7 +13,7 @@ from helpers.db_helpers import execute_values_insert, fetch_all
 from helpers.faker_generators import FakeDataGenerator
 
 # Dataset URI — downstream DAGs can listen for updates
-CATEGORY_DATASET = Dataset("postgres://ecommerce/categories")
+CATEGORY_DATASET = Dataset("postgres://postgres-main/ecommerce_db/public/categories")
 
 
 def generate_parent_categories(**kwargs):

@@ -188,6 +188,7 @@ CREATE TABLE IF NOT EXISTS orderdetails (
     product_price   NUMERIC(15, 2) NOT NULL DEFAULT 0,
     product_tax     NUMERIC(15, 2) NOT NULL DEFAULT 0,
     subtotal_amount NUMERIC(15, 2) NOT NULL DEFAULT 0,
+    unit_cost_at_order NUMERIC(15, 2),
     created_at      TIMESTAMP NOT NULL DEFAULT NOW()
 );
 

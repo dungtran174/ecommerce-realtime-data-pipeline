@@ -5,6 +5,7 @@ Each method generates realistic data for a specific table or group of tables.
 
 import random
 import logging
+from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime, timedelta
 from faker import Faker
 
@@ -285,7 +286,7 @@ class FakeDataGenerator:
     def generate_order(self, user_id, address_id, product_list,
                        payment_method_ids, shipping_method_ids,
                        order_status_ids, payment_status_ids,
-                       shipping_status_ids, discount_id=None):
+                       shipping_status_ids, discount=None):
         """
         Generate a complete order with order details.
 
@@ -298,7 +299,7 @@ class FakeDataGenerator:
             order_status_ids: list of valid order status IDs
             payment_status_ids: list of valid payment status IDs
             shipping_status_ids: list of valid shipping status IDs
-            discount_id: optional discount ID to apply
+            discount: optional row with id, type and value
 
         Returns:
             tuple: (order_data, order_details_list)
@@ -309,13 +310,13 @@ class FakeDataGenerator:
 
         # Calculate order details
         order_details = []
-        order_amount = 0
+        order_amount = Decimal("0.00")
 
         for product in selected_products:
             qty = random.randint(1, 5)
-            price = float(product["product_price"])
-            tax = round(price * 0.1, 2)  # 10% VAT
-            subtotal = round((price + tax) * qty, 2)
+            price = Decimal(str(product["product_price"]))
+            tax = (price * Decimal("0.10")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            subtotal = (price + tax) * qty
             order_amount += subtotal
             order_details.append({
                 "product_id": product["id"],
@@ -326,11 +327,18 @@ class FakeDataGenerator:
             })
 
         # Calculate discount
-        discount_amount = 0
-        if discount_id:
-            discount_amount = round(order_amount * random.uniform(0.05, 0.2), 2)
+        discount_amount = Decimal("0.00")
+        if discount:
+            value = Decimal(str(discount["value"]))
+            if discount["type"] == "percent":
+                discount_amount = (order_amount * value / Decimal("100")).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP)
+            elif discount["type"] == "amount":
+                discount_amount = min(value, order_amount)
+            else:
+                raise ValueError(f"Unsupported discount type: {discount['type']}")
 
-        total_amount = round(order_amount - discount_amount, 2)
+        total_amount = order_amount - discount_amount
 
         order_data = {
             "user_id": user_id,
@@ -339,7 +347,7 @@ class FakeDataGenerator:
             "order_amount": order_amount,
             "discount_amount": discount_amount,
             "total_amount": total_amount,
-            "discount_id": discount_id,
+            "discount_id": discount["id"] if discount else None,
             "payment_method_id": random.choice(payment_method_ids),
             "payment_status_id": random.choice(payment_status_ids),
             "order_status_id": random.choice(order_status_ids),

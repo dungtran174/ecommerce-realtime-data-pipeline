@@ -14,13 +14,67 @@ from airflow.operators.python import PythonOperator
 from datetime import datetime
 import random
 import logging
+import os
 
-from helpers.db_helpers import (
-    execute_query, execute_values_insert, fetch_all, fetch_one
-)
+from helpers.db_helpers import create_complete_order, fetch_all, get_connection
 from helpers.faker_generators import FakeDataGenerator
 
 logger = logging.getLogger(__name__)
+
+
+def advance_order_lifecycle(limit=50):
+    """Move existing orders one valid fulfillment step per scheduler run."""
+    transitions = {
+        "pending": ("confirmed", "pending"),
+        "confirmed": ("shipping", "picked_up"),
+        "shipping": ("delivered", "delivered"),
+    }
+    conn = get_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT o.id, os.order_status_name, pm.payment_method_name
+                       FROM orders o
+                       JOIN order_status os ON o.order_status_id = os.id
+                       JOIN payment_methods pm ON o.payment_method_id = pm.id
+                       WHERE os.order_status_name IN ('pending', 'confirmed', 'shipping')
+                       ORDER BY o.id LIMIT %s FOR UPDATE OF o SKIP LOCKED""",
+                    (limit,),
+                )
+                orders = cur.fetchall()
+                for order_id, current, method in orders:
+                    next_status, next_shipping = transitions[current]
+                    cod_delivered = method == "COD" and next_status == "delivered"
+                    cur.execute(
+                        """UPDATE orders SET
+                             order_status_id = (SELECT id FROM order_status WHERE order_status_name=%s),
+                             shipping_status_id = (SELECT id FROM shipping_status WHERE shipping_status_name=%s),
+                             payment_status_id = CASE WHEN %s THEN
+                                 (SELECT id FROM payment_status WHERE payment_status_name='completed')
+                                 ELSE payment_status_id END,
+                             shipped_at = CASE WHEN %s THEN now() ELSE shipped_at END,
+                             updated_at = now()
+                           WHERE id=%s""",
+                        (next_status, next_shipping, cod_delivered,
+                         next_status == "shipping", order_id),
+                    )
+                    if cod_delivered:
+                        cur.execute(
+                            """UPDATE transactions SET status=TRUE,
+                               description=%s WHERE order_id=%s AND transaction_type='payment'""",
+                            (f"COD payment received for order #{order_id}", order_id),
+                        )
+                    cur.execute(
+                        """INSERT INTO order_status_history
+                           (order_id, order_status_id, comments)
+                           VALUES (%s,
+                             (SELECT id FROM order_status WHERE order_status_name=%s), %s)""",
+                        (order_id, next_status, f"Order #{order_id} moved to {next_status}"),
+                    )
+        return len(orders)
+    finally:
+        conn.close()
 
 
 def generate_bulk_orders(count=3, **kwargs):
@@ -34,39 +88,47 @@ def generate_bulk_orders(count=3, **kwargs):
     4. Insert order → order_details → transaction → status_history
     """
     gen = FakeDataGenerator()
+    seed = os.getenv("ECOMMERCE_RANDOM_SEED")
+    if seed is not None:
+        random.seed(int(seed))
+    advanced = advance_order_lifecycle()
+    logger.info("Advanced %s existing orders by one status", advanced)
 
     # Fetch required reference data
+    order_by = "u.id, a.id" if seed is not None else "RANDOM()"
     users_with_addresses = fetch_all(
         "SELECT u.id AS user_id, a.id AS address_id "
         "FROM users u "
         "INNER JOIN addresses a ON u.id = a.user_id "
-        "ORDER BY RANDOM() LIMIT 50"
+        f"ORDER BY {order_by} LIMIT 50"
     )
     if not users_with_addresses:
         logger.warning("No users with addresses found. Run user_registration DAG first.")
         return "Skipped: no users with addresses"
 
     products = fetch_all(
-        "SELECT id, product_price FROM products WHERE product_price > 0"
+        "SELECT id, product_price FROM products WHERE product_price > 0 ORDER BY id"
     )
     if not products:
         logger.warning("No products found. Run product DAG first.")
         return "Skipped: no products"
 
-    payment_methods = fetch_all("SELECT id FROM payment_methods")
+    payment_methods = fetch_all("SELECT id, payment_method_name FROM payment_methods")
     shipping_methods = fetch_all("SELECT id FROM shipping_methods")
-    order_statuses = fetch_all("SELECT id FROM order_status")
-    payment_statuses = fetch_all("SELECT id FROM payment_status")
-    shipping_statuses = fetch_all("SELECT id FROM shipping_status")
+    order_statuses = fetch_all("SELECT id, order_status_name FROM order_status")
+    payment_statuses = fetch_all("SELECT id, payment_status_name FROM payment_status")
+    shipping_statuses = fetch_all("SELECT id, shipping_status_name FROM shipping_status")
 
     # Optional: pick a random discount (50% chance of having a discount)
-    discounts = fetch_all("SELECT id FROM discounts")
+    discounts = fetch_all("SELECT id, type, value FROM discounts")
 
     pm_ids = [r["id"] for r in payment_methods]
     sm_ids = [r["id"] for r in shipping_methods]
-    os_ids = [r["id"] for r in order_statuses]
-    ps_ids = [r["id"] for r in payment_statuses]
-    ss_ids = [r["id"] for r in shipping_statuses]
+    pending_order_id = next(r["id"] for r in order_statuses if r["order_status_name"] == "pending")
+    pending_shipping_id = next(r["id"] for r in shipping_statuses if r["shipping_status_name"] == "pending")
+    completed_payment_id = next(r["id"] for r in payment_statuses if r["payment_status_name"] == "completed")
+    pending_payment_id = next(r["id"] for r in payment_statuses if r["payment_status_name"] == "pending")
+    method_names = {r["id"]: r["payment_method_name"] for r in payment_methods}
 
     orders_created = 0
 
@@ -77,9 +139,9 @@ def generate_bulk_orders(count=3, **kwargs):
         address_id = user_addr["address_id"]
 
         # 50% chance of applying a discount
-        discount_id = None
+        discount = None
         if discounts and random.random() > 0.5:
-            discount_id = random.choice(discounts)["id"]
+            discount = random.choice(discounts)
 
         # Generate order data
         order_data, order_details = gen.generate_order(
@@ -88,64 +150,19 @@ def generate_bulk_orders(count=3, **kwargs):
             product_list=products,
             payment_method_ids=pm_ids,
             shipping_method_ids=sm_ids,
-            order_status_ids=os_ids,
-            payment_status_ids=ps_ids,
-            shipping_status_ids=ss_ids,
-            discount_id=discount_id,
+            order_status_ids=[pending_order_id],
+            payment_status_ids=[completed_payment_id],
+            shipping_status_ids=[pending_shipping_id],
+            discount=discount,
         )
 
-        # 1) Insert order and get order_id
-        result = execute_query(
-            """
-            INSERT INTO orders (
-                user_id, staff_id, address_id,
-                order_amount, discount_amount, total_amount,
-                discount_id, payment_method_id, payment_status_id,
-                order_status_id, shipping_method_id, shipping_status_id
-            ) VALUES (
-                %(user_id)s, %(staff_id)s, %(address_id)s,
-                %(order_amount)s, %(discount_amount)s, %(total_amount)s,
-                %(discount_id)s, %(payment_method_id)s, %(payment_status_id)s,
-                %(order_status_id)s, %(shipping_method_id)s, %(shipping_status_id)s
-            ) RETURNING id
-            """,
-            order_data,
-            fetch=True,
-        )
-        order_id = result[0]["id"]
+        if method_names[order_data["payment_method_id"]] == "COD":
+            order_data["payment_status_id"] = pending_payment_id
+            order_data["payment_completed"] = False
+        else:
+            order_data["payment_completed"] = True
 
-        # 2) Insert order details (line items)
-        details_tuples = [
-            (
-                order_id,
-                d["product_id"],
-                d["quantity"],
-                d["product_price"],
-                d["product_tax"],
-                d["subtotal_amount"],
-            )
-            for d in order_details
-        ]
-        execute_values_insert(
-            "INSERT INTO orderdetails "
-            "(order_id, product_id, quantity, product_price, product_tax, subtotal_amount) "
-            "VALUES %s",
-            details_tuples,
-        )
-
-        # 3) Insert payment transaction
-        execute_values_insert(
-            "INSERT INTO transactions "
-            "(order_id, transaction_type, status, description) VALUES %s",
-            [(order_id, "payment", True, f"Payment for order #{order_id}")],
-        )
-
-        # 4) Insert order status history
-        execute_values_insert(
-            "INSERT INTO order_status_history "
-            "(order_id, order_status_id, comments) VALUES %s",
-            [(order_id, order_data["order_status_id"], f"Order #{order_id} created")],
-        )
+        create_complete_order(order_data, order_details)
 
         orders_created += 1
 

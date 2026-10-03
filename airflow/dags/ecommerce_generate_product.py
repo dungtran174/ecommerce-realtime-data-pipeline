@@ -14,8 +14,8 @@ from helpers.db_helpers import execute_values_insert, fetch_all
 from helpers.faker_generators import FakeDataGenerator
 
 # Listen for updates from brand and category DAGs
-BRAND_DATASET = Dataset("postgres://ecommerce/brands")
-CATEGORY_DATASET = Dataset("postgres://ecommerce/categories")
+BRAND_DATASET = Dataset("postgres://postgres-main/ecommerce_db/public/brands")
+CATEGORY_DATASET = Dataset("postgres://postgres-main/ecommerce_db/public/categories")
 
 
 def generate_products(**kwargs):
@@ -80,7 +80,7 @@ def assign_product_tags(**kwargs):
 with DAG(
     dag_id="ecommerce_generate_product",
     description="Generate products when brands or categories are updated",
-    schedule=[BRAND_DATASET, CATEGORY_DATASET],
+    schedule=BRAND_DATASET | CATEGORY_DATASET,
     start_date=datetime(2024, 1, 1),
     catchup=False,
     tags=["ecommerce", "event-driven", "business"],

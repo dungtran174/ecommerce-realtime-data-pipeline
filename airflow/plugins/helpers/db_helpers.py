@@ -130,3 +130,64 @@ def fetch_all(query, params=None):
             return cur.fetchall()
     finally:
         conn.close()
+
+
+def create_complete_order(order_data, order_details):
+    """Commit an order, its lines, payment record and history atomically.
+
+    A failed line or transaction rolls back the whole order. The caller must
+    provide at least one line; otherwise a header with no sale would leak into
+    CDC and the order overview.
+    """
+    if not order_details:
+        raise ValueError("An order must contain at least one line item")
+
+    conn = get_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO orders (
+                        user_id, staff_id, address_id,
+                        order_amount, discount_amount, total_amount,
+                        discount_id, payment_method_id, payment_status_id,
+                        order_status_id, shipping_method_id, shipping_status_id
+                    ) VALUES (
+                        %(user_id)s, %(staff_id)s, %(address_id)s,
+                        %(order_amount)s, %(discount_amount)s, %(total_amount)s,
+                        %(discount_id)s, %(payment_method_id)s, %(payment_status_id)s,
+                        %(order_status_id)s, %(shipping_method_id)s, %(shipping_status_id)s
+                    ) RETURNING id""",
+                    order_data,
+                )
+                order_id = cur.fetchone()[0]
+                detail_rows = [
+                    (order_id, d["product_id"], d["quantity"], d["product_price"],
+                     d["product_tax"], d["subtotal_amount"])
+                    for d in order_details
+                ]
+                execute_values(
+                    cur,
+                    """INSERT INTO orderdetails
+                       (order_id, product_id, quantity, product_price,
+                        product_tax, subtotal_amount) VALUES %s""",
+                    detail_rows,
+                )
+                cur.execute(
+                    """INSERT INTO transactions
+                       (order_id, transaction_type, status, description)
+                       VALUES (%s, 'payment', %s, %s)""",
+                    (order_id, order_data.get("payment_completed", True),
+                     f"Payment for order #{order_id}" if order_data.get("payment_completed", True)
+                     else f"Payment pending for order #{order_id}"),
+                )
+                cur.execute(
+                    """INSERT INTO order_status_history
+                       (order_id, order_status_id, comments)
+                       VALUES (%s, %s, %s)""",
+                    (order_id, order_data["order_status_id"],
+                     f"Order #{order_id} created"),
+                )
+        return order_id
+    finally:
+        conn.close()

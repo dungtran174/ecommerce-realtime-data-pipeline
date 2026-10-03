@@ -13,7 +13,7 @@ from helpers.db_helpers import execute_values_insert
 from helpers.faker_generators import FakeDataGenerator
 
 # Dataset URI — downstream DAGs can listen for updates
-BRAND_DATASET = Dataset("postgres://ecommerce/brands")
+BRAND_DATASET = Dataset("postgres://postgres-main/ecommerce_db/public/brands")
 
 
 def generate_brands(**kwargs):
